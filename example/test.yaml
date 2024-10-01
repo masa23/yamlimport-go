@@ -1,0 +1,5 @@
+import: import.yaml
+welcome_message: "Hello, {{ UserName }}"
+nested_key2: "{{ nested.Key2 }}"
+nested:
+  import: import.yaml
