@@ -1,12 +1,25 @@
 # yamlimport-go [![Go Report Card](https://goreportcard.com/badge/github.com/masa23/yamlimport-go)](https://goreportcard.com/report/github.com/masa23/yamlimport-go) [![GoDoc](https://godoc.org/github.com/masa23/yamlimport-go?status.svg)](https://godoc.org/github.com/masa23/yamlimport-go) [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/masa23/yamlimport-go/main/LICENSE)
 
-A YAML import library for Golang. This library supports the functionality of importing other YAML files within a YAML file and also allows dynamic replacement of placeholders (e.g., `{{ Hoge }}`).
+**yamlimport-go** is a lightweight YAML loader for Go that supports:
+
+- Importing other YAML files via `import:` keys (relative to the importing file)
+- Resolving `{{ placeholder }}` expressions using values from the merged YAML tree
+- A simple API via `yamlimport.Unmarshal(path, &out)`
+
+> Note: Only scalar string substitution is supported. Nested objects or sequences cannot be substituted directly.
+
 
 ## Installation
 
 ```bash
 go get github.com/masa23/yamlimport-go
 ```
+
+- File imports (relative to the importing YAML)
+- Placeholder substitution like `{{ some.key }}`
+- Simple API via `yamlimport.Unmarshal(path, &out)`
+
+> Currently supports string substitution only. Nested lists/maps are not expanded into placeholders.
 
 ## Usage
 
