@@ -2,9 +2,12 @@ package yamlimport
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func Test_getPath(t *testing.T) {
@@ -14,114 +17,139 @@ func Test_getPath(t *testing.T) {
 	assert.Equal(t, currentDir+"/relative/path", getPath(currentDir, "relative/path"), "Should return correct path for relative path")
 }
 
-func Test_resolveImports(t *testing.T) {
-	// Importを解決するためのテストファイルを作成
-	importYAML := "key1: value1\nkey2: value2\n"
-	err := os.WriteFile("test_import.yaml", []byte(importYAML), 0644)
-	assert.NoError(t, err)
-	defer os.Remove("test_import.yaml")
+func Test_readYAMLNode(t *testing.T) {
+	tempFile := "test_read.yaml"
+	content := "key: value\n"
+	_ = os.WriteFile(tempFile, []byte(content), 0644)
+	defer os.Remove(tempFile)
 
-	yamlData := map[string]interface{}{
-		"import": "test_import.yaml",
-	}
-	cdir, err := os.Getwd()
+	node, err := readYAMLNode(tempFile)
 	assert.NoError(t, err)
-
-	err = resolveImports(yamlData, cdir)
-	assert.NoError(t, err)
-	assert.Equal(t, map[string]interface{}{
-		"key1": "value1",
-		"key2": "value2",
-	}, yamlData, "Should import and merge data correctly")
+	assert.Equal(t, "key", node.Content[0].Content[0].Value)
+	assert.Equal(t, "value", node.Content[0].Content[1].Value)
 }
 
-func Test_readYAMLFile(t *testing.T) {
-	// テスト用YAMLファイルを作成
-	testYAML := "key: value\n"
-	err := os.WriteFile("test.yaml", []byte(testYAML), 0644)
-	assert.NoError(t, err)
-	defer os.Remove("test.yaml")
-
-	result, err := readYAMLFile("test.yaml")
-	assert.NoError(t, err)
-	assert.Equal(t, map[string]interface{}{"key": "value"}, result, "Should read YAML file and return correct data")
+func mustYAMLString(n *yaml.Node) string {
+	out, err := yaml.Marshal(n)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
 }
 
 func Test_resolvePlaceholders(t *testing.T) {
-	root := map[string]interface{}{
-		"outer": map[string]interface{}{
-			"inner": "resolved_value",
-		},
-	}
-	yamlData := map[string]interface{}{
-		"placeholder": "{{ outer.inner }}",
-	}
-	err := resolvePlaceholders(yamlData, root)
-	assert.NoError(t, err)
-	assert.Equal(t, "resolved_value", yamlData["placeholder"], "Should resolve placeholder to actual value")
+	yamlStr := `
+name: "App"
+env:
+  region: ap-northeast-1
+  zone: "c"
+message: "Deploying to {{ env.region }}-{{ env.zone }}"
+nested:
+  note: "{{ name }} is live"
+`
+	var root yaml.Node
+	require.NoError(t, yaml.NewDecoder(strings.NewReader(yamlStr)).Decode(&root))
+	require.Len(t, root.Content, 1)
+	mapping := root.Content[0]
+
+	err := resolvePlaceholders(mapping, mapping)
+	require.NoError(t, err)
+
+	var out map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(mustYAMLString(&root)), &out))
+
+	assert.Equal(t, "Deploying to ap-northeast-1-c", out["message"])
+	assert.Equal(t, map[string]interface{}{
+		"note": "App is live",
+	}, out["nested"])
 }
 
-func Test_processYAML(t *testing.T) {
-	// まずインポートされるYAMLファイルを作成します
-	importYAML := `
-db_host: localhost
-db_port: 5432
+func Test_resolvePlaceholder(t *testing.T) {
+	yamlData := `
+env:
+  name: production
+  region: ap-northeast-1
+service:
+  name: api
+  port: "8080"
 `
-	err := os.WriteFile("import_test.yaml", []byte(importYAML), 0644)
-	assert.NoError(t, err)
-	defer os.Remove("import_test.yaml") // テスト後に削除
+	var root yaml.Node
+	require.NoError(t, yaml.NewDecoder(strings.NewReader(yamlData)).Decode(&root))
 
-	// インポートを含むYAML
-	yamlData := map[string]interface{}{
-		"import":              "import_test.yaml",
-		"app_name":            "TestApp",
-		"db_host_placeholder": "{{ db_host }}",
+	tests := []struct {
+		name     string
+		template string
+		want     string
+		wantErr  bool
+	}{
+		{
+			name:     "Single placeholder",
+			template: "Environment: {{ env.name }}",
+			want:     "Environment: production",
+		},
+		{
+			name:     "Multiple placeholders",
+			template: "{{ service.name }} running in {{ env.region }}",
+			want:     "api running in ap-northeast-1",
+		},
+		{
+			name:     "Nested placeholder",
+			template: "Port: {{ service.port }}",
+			want:     "Port: 8080",
+		},
+		{
+			name:     "Missing key",
+			template: "{{ env.zone }}",
+			wantErr:  true,
+		},
+		{
+			name:     "Unclosed placeholder",
+			template: "Invalid {{ env.name",
+			wantErr:  true,
+		},
 	}
 
-	// processYAML をテスト
-	cdir, err := os.Getwd() // カレントディレクトリを取得
-	assert.NoError(t, err)
-	err = processYAML(yamlData, cdir) // cdirを引数として渡す
-	assert.NoError(t, err)
-
-	expected := map[string]interface{}{
-		"app_name":            "TestApp",
-		"db_host_placeholder": "localhost",
-		"db_host":             "localhost",
-		"db_port":             5432,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolvePlaceholder(tt.template, root.Content[0])
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.want, got)
+			}
+		})
 	}
-
-	assert.Equal(t, expected, yamlData)
 }
 
 func TestUnmarshal(t *testing.T) {
-	// テスト用のインポートされるYAMLファイルを作成します
+	// Create a YAML file to be imported for testing
 	importYAML := `
 db_host: localhost
 db_port: 5432
 `
 	err := os.WriteFile("import_test.yaml", []byte(importYAML), 0644)
 	assert.NoError(t, err)
-	defer os.Remove("import_test.yaml") // テスト後に削除
+	defer os.Remove("import_test.yaml") // Remove after test
 
-	// テスト用のメインYAMLファイルを作成
+	// Create the main YAML file for testing
 	mainYAML := `
-import: import_test.yaml
 app_name: TestApp
 db_host_placeholder: "{{ db_host }}"
+import: import_test.yaml
 `
 	err = os.WriteFile("main_test.yaml", []byte(mainYAML), 0644)
 	assert.NoError(t, err)
-	defer os.Remove("main_test.yaml") // テスト後に削除
+	defer os.Remove("main_test.yaml") // Remove after test
 
-	// 構造体としてアンマーシャルされるためのマップを定義
+	// Define a map for unmarshalling the result
 	var result map[string]interface{}
 
-	// Unmarshal関数のテスト
+	// Test the Unmarshal function
 	err = Unmarshal("main_test.yaml", &result)
 	assert.NoError(t, err)
 
-	// 期待される結果
+	// Expected result
 	expected := map[string]interface{}{
 		"app_name":            "TestApp",
 		"db_host_placeholder": "localhost",
