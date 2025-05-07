@@ -30,8 +30,17 @@ func expandImports(n *yaml.Node, cdir string) error {
 				if imported.Kind != yaml.MappingNode {
 					return fmt.Errorf("imported file must be a mapping node")
 				}
-				// Remove "import" key and merge contents
+				// Remove "import" key and check for duplicate keys before merging contents
 				n.Content = append(n.Content[:i], n.Content[i+2:]...)
+				existingKeys := make(map[string]bool)
+				for j := 0; j < len(n.Content); j += 2 {
+					existingKeys[n.Content[j].Value] = true
+				}
+				for j := 0; j < len(imported.Content); j += 2 {
+					if existingKeys[imported.Content[j].Value] {
+						return fmt.Errorf("duplicate key '%s' found during import", imported.Content[j].Value)
+					}
+				}
 				n.Content = append(n.Content, imported.Content...)
 				// Restart scan to handle nested imports
 				if err := expandImports(n, cdir); err != nil {
