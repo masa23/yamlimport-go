@@ -20,7 +20,8 @@ func Test_getPath(t *testing.T) {
 func Test_readYAMLNode(t *testing.T) {
 	tempFile := "test_read.yaml"
 	content := "key: value\n"
-	_ = os.WriteFile(tempFile, []byte(content), 0644)
+	err := os.WriteFile(tempFile, []byte(content), 0644)
+	require.NoError(t, err)
 	defer os.Remove(tempFile)
 
 	node, err := readYAMLNode(tempFile)
