@@ -9,62 +9,70 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// processImport removes the "import" key at the given index, loads the referenced YAML file,
+// checks for duplicate keys, merges its mapping content, and then calls expandImports to process nested imports.
+func processImport(n *yaml.Node, index int, valNode *yaml.Node, cdir string) error {
+	path := getPath(cdir, valNode.Value)
+	imported, err := readYAMLNode(path)
+	if err != nil {
+		return err
+	}
+	if imported.Kind == yaml.DocumentNode && len(imported.Content) > 0 {
+		imported = imported.Content[0]
+	}
+	if imported.Kind != yaml.MappingNode {
+		return fmt.Errorf("imported file must be a mapping node")
+	}
+
+	n.Content = append(n.Content[:index], n.Content[index+2:]...)
+
+	existingKeys := make(map[string]bool)
+	for i := 0; i < len(n.Content); i += 2 {
+		existingKeys[n.Content[i].Value] = true
+	}
+	for i := 0; i < len(imported.Content); i += 2 {
+		if existingKeys[imported.Content[i].Value] {
+			return fmt.Errorf("duplicate key '%s' found during import", imported.Content[i].Value)
+		}
+	}
+
+	n.Content = append(n.Content, imported.Content...)
+
+	return expandImports(n, cdir)
+}
+
+// expandImportsInMapping scans a mapping node for "import" keys, loads and merges their content,
+// and recursively expands nested imports.
+func expandImportsInMapping(n *yaml.Node, cdir string) error {
+	i := 0
+	for i < len(n.Content) {
+		keyNode := n.Content[i]
+		valNode := n.Content[i+1]
+
+		if keyNode.Value == "import" && valNode.Kind == yaml.ScalarNode {
+			if err := processImport(n, i, valNode, cdir); err != nil {
+				return err
+			}
+			i = 0
+			continue
+		}
+
+		if valNode.Kind == yaml.MappingNode || valNode.Kind == yaml.SequenceNode {
+			if err := expandImports(valNode, cdir); err != nil {
+				return err
+			}
+		}
+		i += 2
+	}
+	return nil
+}
+
 // expandImports recursively loads and merges YAML files specified via "import" keys.
 func expandImports(n *yaml.Node, cdir string) error {
-	if n.Kind == yaml.MappingNode {
-		i := 0
-		for i < len(n.Content) {
-			keyNode := n.Content[i]
-			valNode := n.Content[i+1]
-
-			// Detect "import: path.yaml"
-			if keyNode.Value == "import" && valNode.Kind == yaml.ScalarNode {
-				path := getPath(cdir, valNode.Value)
-				imported, err := readYAMLNode(path)
-				if err != nil {
-					return err
-				}
-				if imported.Kind == yaml.DocumentNode && len(imported.Content) > 0 {
-					imported = imported.Content[0]
-				}
-				if imported.Kind != yaml.MappingNode {
-					return fmt.Errorf("imported file must be a mapping node")
-				}
-				// Remove "import" key and check for duplicate keys before merging contents
-				n.Content = append(n.Content[:i], n.Content[i+2:]...)
-				existingKeys := make(map[string]bool)
-				for j := 0; j < len(n.Content); j += 2 {
-					existingKeys[n.Content[j].Value] = true
-				}
-				for j := 0; j < len(imported.Content); j += 2 {
-					if existingKeys[imported.Content[j].Value] {
-						return fmt.Errorf("duplicate key '%s' found during import", imported.Content[j].Value)
-					}
-				}
-				n.Content = append(n.Content, imported.Content...)
-				// Restart scan to handle nested imports
-				if err := expandImports(n, cdir); err != nil {
-					return err
-				}
-				i = 0
-				continue
-			}
-
-			// Recursively expand if value is MappingNode or SequenceNode
-			if valNode.Kind == yaml.MappingNode {
-				if err := expandImports(valNode, cdir); err != nil {
-					return err
-				}
-			} else if valNode.Kind == yaml.SequenceNode {
-				for _, item := range valNode.Content {
-					if err := expandImports(item, cdir); err != nil {
-						return err
-					}
-				}
-			}
-			i += 2
-		}
-	} else if n.Kind == yaml.SequenceNode {
+	switch n.Kind {
+	case yaml.MappingNode:
+		return expandImportsInMapping(n, cdir)
+	case yaml.SequenceNode:
 		for _, item := range n.Content {
 			if err := expandImports(item, cdir); err != nil {
 				return err
@@ -177,7 +185,8 @@ func findValueInNode(n *yaml.Node, keys []string) (string, error) {
 	return n.Value, nil
 }
 
-// Unmarshal reads a YAML file, resolves imports and placeholders, and unmarshals into a Go struct.
+// Unmarshal reads a YAML file, expands "import" keys recursively, resolves "{{...}}" placeholders,
+// and unmarshals the final result into a Go struct.
 func Unmarshal(path string, v interface{}) error {
 	cdir := filepath.Dir(path)
 	buf, err := os.ReadFile(path)
